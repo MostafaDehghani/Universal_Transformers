@@ -136,6 +136,30 @@ def universal_transformer_with_gru_as_transition_function():
   hparams.add_step_timing_signal = False # Let gru count in time for us!
   return hparams
 
+@registry.register_hparams
+def universal_transformer_with_lstm_as_transition_function():
+  hparams = universal_transformer.universal_transformer_base()
+  hparams.recurrence_type = "lstm"
+  hparams.add_step_timing_signal = False # Let lstm count in time for us!
+  return hparams
+
+@registry.register_hparams
+def universal_transformer_basic_plus_gru():
+  hparams = universal_transformer.universal_transformer_base()
+  hparams.recurrence_type = "basic_plus_gru"
+  # hparams.transformer_ffn_type = "fc"
+  hparams.batch_size = 2048
+  hparams.add_step_timing_signal = False # Let lstm count in time for us!
+  return hparams
+
+@registry.register_hparams
+def universal_transformer_basic_plus_lstm():
+  hparams = universal_transformer.universal_transformer_base()
+  hparams.recurrence_type = "basic_plus_lstm"
+  # hparams.transformer_ffn_type = "fc"
+  hparams.batch_size = 2048
+  hparams.add_step_timing_signal = False # Let lstm count in time for us!
+  return hparams
 
 @registry.register_hparams
 def universal_transformer_all_steps_so_far():
@@ -143,10 +167,3 @@ def universal_transformer_all_steps_so_far():
   hparams.recurrence_type = "all_steps_so_far"
   return hparams
 
-
-@registry.register_hparams
-def universal_transformer_with_lstm_as_transition_function():
-  hparams = universal_transformer.universal_transformer_base()
-  hparams.recurrence_type = "lstm"
-  hparams.add_step_timing_signal = False # Let lstm count in time for us!
-  return hparams

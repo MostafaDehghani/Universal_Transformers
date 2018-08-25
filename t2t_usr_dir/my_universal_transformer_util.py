@@ -252,6 +252,25 @@ def get_ut_layer(x,
         attention_unit=attention_unit,
         pad_remover=pad_remover)
 
+  elif hparams.recurrence_type == "basic_plus_gru":
+    ut_initializer = (x, x, x)  # (state, input, memory)
+    ut_function = functools.partial(
+        universal_transformer_basic_plus_gru,
+        hparams=hparams,
+        ffn_unit=ffn_unit,
+        attention_unit=attention_unit,
+        pad_remover=pad_remover)
+
+
+  elif hparams.recurrence_type == "basic_plus_lstm":
+    ut_initializer = (x, x, x)  # (state, input, memory)
+    ut_function = functools.partial(
+        universal_transformer_basic_plus_lstm,
+        hparams=hparams,
+        ffn_unit=ffn_unit,
+        attention_unit=attention_unit,
+        pad_remover=pad_remover)
+
   elif hparams.recurrence_type == "all_steps_so_far":
     #at each step, model gets a combination of the representations learned
     # from all the previouse steps
@@ -472,6 +491,203 @@ def universal_transformer_with_lstm_as_transition_function(layer_inputs,
 
 
 
+def universal_transformer_basic_plus_gru(layer_inputs,
+                               step,
+                               hparams,
+                               ffn_unit,
+                               attention_unit,
+                               pad_remover=None):
+  """The UT layer which uses a gru as transition function.
+
+  Args:
+    layer_inputs:
+      - state: state
+      - inputs: the original embedded inputs (= inputs to the first step)
+      - memory: memory used in lstm.
+    step: indicating number of steps take so far
+    hparams: model hyper-parameters.
+    ffn_unit: feed-forward unit
+    attention_unit: multi-head attention unit
+
+  Returns:
+    layer_output:
+        new_state: new state
+        inputs: not uesed
+        memory: not used
+  """
+
+
+  state, unused_inputs, unused_memory = tf.unstack(layer_inputs,
+                                                   num=None, axis=0,
+                                                   name="unstack")
+  # NOTE:
+  # state (ut_state): output of the gru in the previous step
+  # inputs (ut_inputs): original input --> we don't use it here
+  # memory: we don't use it here
+
+  # Multi_head_attention:
+  assert hparams.add_step_timing_signal == False  # Let gru count for us!
+  mh_attention_input = universal_transformer_util.step_preprocess(state, step, hparams)
+  transition_function_input = ffn_unit(attention_unit(mh_attention_input))
+
+
+  # Transition Function:
+  transition_function_input = common_layers.layer_preprocess(
+    transition_function_input, hparams)
+  with tf.variable_scope("gru"):
+    # gru update gate: z_t = sigmoid(W_z.x_t + U_z.h_{t-1})
+    transition_function_update_gate = _ffn_layer_multi_inputs(
+        [transition_function_input, state],
+        hparams,
+        name="update",
+        bias_initializer=tf.constant_initializer(1.0),
+        activation=tf.sigmoid,
+        pad_remover=pad_remover)
+
+    tf.contrib.summary.scalar("gru_update_gate",
+                              tf.reduce_mean(transition_function_update_gate))
+
+    # gru reset gate: r_t = sigmoid(W_r.x_t + U_r.h_{t-1})
+    transition_function_reset_gate = _ffn_layer_multi_inputs(
+        [transition_function_input, state],
+        hparams,
+        name="reset",
+        bias_initializer=tf.constant_initializer(1.0),
+        activation=tf.sigmoid,
+        pad_remover=pad_remover)
+
+    tf.contrib.summary.scalar("gru_reset_gate",
+                              tf.reduce_mean(transition_function_reset_gate))
+    reset_state = transition_function_reset_gate * state
+
+    # gru_candidate_activation: h' = tanh(W_{x_t} + U (r_t h_{t-1})
+    transition_function_candidate = _ffn_layer_multi_inputs(
+        [transition_function_input, reset_state],
+        hparams,
+        name="candidate",
+        bias_initializer=tf.zeros_initializer(),
+        activation=tf.tanh,
+        pad_remover=pad_remover)
+
+    transition_function_output = ((1 - transition_function_update_gate)
+                                  * transition_function_input +
+                                  transition_function_update_gate
+                                  * transition_function_candidate)
+
+  transition_function_output = common_layers.layer_preprocess(
+      transition_function_output, hparams)
+
+  return transition_function_output, unused_inputs, unused_memory
+
+
+
+def universal_transformer_basic_plus_lstm(layer_inputs,
+                               step,
+                               hparams,
+                               ffn_unit,
+                               attention_unit,
+                               pad_remover=None):
+  """The UT layer which uses a lstm as transition function.
+
+  Args:
+    layer_inputs:
+      - state: state
+      - inputs: the original embedded inputs (= inputs to the first step)
+      - memory: memory used in lstm.
+    step: indicating number of steps take so far
+    hparams: model hyper-parameters.
+    ffn_unit: feed-forward unit
+    attention_unit: multi-head attention unit
+
+  Returns:
+    layer_output:
+        new_state: new state
+        inputs: the original embedded inputs (= inputs to the first step)
+        memory: contains information of state from all the previous steps.
+  """
+
+
+  state, unused_inputs, memory = tf.unstack(layer_inputs, num=None, axis=0,
+                                     name="unstack")
+  # NOTE:
+  # state (ut_state): output of the lstm in the previous step
+  # inputs (ut_input): original input --> we don't use it here
+  # memory: lstm memory
+
+
+
+  # Multi_head_attention:
+  assert hparams.add_step_timing_signal == False  # Let lstm count for us!
+  mh_attention_input = universal_transformer_util.step_preprocess(state, step, hparams)
+  transition_function_input = ffn_unit(attention_unit(mh_attention_input))
+
+
+  # Transition Function:
+  transition_function_input = common_layers.layer_preprocess(
+    transition_function_input, hparams)
+  with tf.variable_scope("lstm"):
+    # lstm input gate: i_t = sigmoid(W_i.x_t + U_i.h_{t-1})
+    transition_function_input_gate = _ffn_layer_multi_inputs(
+        [transition_function_input, state],
+        hparams,
+        name="input",
+        bias_initializer=tf.zeros_initializer(),
+        activation=tf.sigmoid,
+        pad_remover=pad_remover)
+
+    tf.contrib.summary.scalar("lstm_input_gate",
+                              tf.reduce_mean(transition_function_input_gate))
+
+    # lstm forget gate: f_t = sigmoid(W_f.x_t + U_f.h_{t-1})
+    transition_function_forget_gate = _ffn_layer_multi_inputs(
+        [transition_function_input, state],
+        hparams,
+        name="forget",
+        bias_initializer=tf.zeros_initializer(),
+        activation=None,
+        pad_remover=pad_remover)
+    forget_bias_tensor = tf.constant(hparams.lstm_forget_bias)
+    transition_function_forget_gate = tf.sigmoid(
+      transition_function_forget_gate + forget_bias_tensor)
+
+    tf.contrib.summary.scalar("lstm_forget_gate",
+                              tf.reduce_mean(transition_function_forget_gate))
+
+    # lstm ouptut gate: o_t = sigmoid(W_o.x_t + U_o.h_{t-1})
+    transition_function_output_gate = _ffn_layer_multi_inputs(
+      [transition_function_input, state],
+      hparams,
+      name="output",
+      bias_initializer=tf.zeros_initializer(),
+      activation=tf.sigmoid,
+      pad_remover=pad_remover)
+
+    tf.contrib.summary.scalar("lstm_output_gate",
+                              tf.reduce_mean(transition_function_output_gate))
+
+    # lstm input modulation
+    transition_function_input_modulation = _ffn_layer_multi_inputs(
+      [transition_function_input, state],
+      hparams,
+      name="input_modulation",
+      bias_initializer=tf.zeros_initializer(),
+      activation=tf.tanh,
+      pad_remover=pad_remover)
+
+    transition_function_memory = (memory * transition_function_forget_gate +
+              transition_function_input_gate * transition_function_input_modulation)
+
+    transition_function_output = (
+            tf.tanh(transition_function_memory) * transition_function_output_gate)
+
+
+
+  transition_function_output = common_layers.layer_preprocess(
+      transition_function_output, hparams)
+
+  return transition_function_output, unused_inputs, transition_function_memory
+
+
 def universal_transformer_all_steps_so_far(layer_inputs,
                                             step, hparams,
                                             ffn_unit,
@@ -526,9 +742,6 @@ def universal_transformer_all_steps_so_far(layer_inputs,
                                                        new_state, step + 1)
 
   return new_state, inputs, memory
-
-
-
 
 
 def _ffn_layer_multi_inputs(inputs_list,
